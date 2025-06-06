@@ -9,7 +9,7 @@
 > Перед любыми манипуляциями желательно сделать резевные копии всех изменяемых файлов.
 
 ## Nozzle mcu temperature
-Показ в веб-интерфейсе клиппера температуры mcu головы
+Показ в веб-интерфейсе клиппера температуры mcu головы.
 
 Установка:
  - загрузить `/usr/share/klipper/klippy/extras/temperature_mcu.py` в принтер
@@ -25,10 +25,15 @@
     max_temp: 100
 
 ## SweepingVibrations resonanse tester
-Новый алгоритм тестирования резонансов (голова ездит и вибрирует)
+Новый алгоритм тестирования резонансов (голова ездит и вибрирует). Проверен на K1C и K1SE.
+
+Начальные условия:
+ - прошивка 1.3.3.46 (возможно заработает на других, но проверялось
+   только на этой)
+ - HelperScript (для снятия графика по двум осям)
+ - root доступ к принтеру (для заливки файлов)
 
 Установка:
-
  - Загрузить в принтер файлы:
 	 - /usr/share/klipper/klippy/extras/resonance_tester.py
 	 - /usr/share/klipper/klippy/extras/shaper_calibrate.py
@@ -41,4 +46,4 @@
 
 В printer.cfg в секции [resonance_tester] заменить 
 `accel_per_hz: 75` на  `accel_per_hz: 60`
-После этого команды `TEST_RESONANCES AXIS=X` и `TEST_RESONANCES AXIS=Y` будут снимать резонансы по новому алгоритму.
+После этого команды `TEST_RESONANCES AXIS=X` и `TEST_RESONANCES AXIS=Y` будут снимать резонансы по новому алгоритму, а `TEST_RESONANCES_GRAPHS` еще и графики построит.
