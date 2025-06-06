@@ -1,17 +1,44 @@
 # K1C-mods
-My modifications of K1C Klipper 
+Модификации Клиппера для Creality K1C
+
+
+> [!CAUTION]
+> Все что вы делаете, вы делаете на свой страх и риск, автор доработок не несет ответственности за любые повреждения, которые могут случиться из-за использования данных модификаций.
+
+> [!IMPORTANT]
+> Перед любыми манипуляциями желательно сделать резевные копии всех изменяемых файлов.
 
 ## Nozzle mcu temperature
+Показ в веб-интерфейсе клиппера температуры mcu головы
 
-Installation:
- - upload file `/usr/share/klipper/klippy/extras/temperature_mcu.py` to printer
- - delete temperature_mcu.pyc in target directory
- - reboot printer
+Установка:
+ - загрузить `/usr/share/klipper/klippy/extras/temperature_mcu.py` в принтер
+ - удалить `/usr/share/klipper/klippy/extras/temperature_mcu.pyc`
+ - перезагрузить принтер
 
-Add folowing section to printer.cfg
+Добавить раздел в printer.cfg
 
     [temperature_sensor nozzle_mcu_temp]
     sensor_type: temperature_mcu
     sensor_mcu: nozzle_mcu
     min_temp: 0
     max_temp: 100
+
+## SweepingVibrations resonanse tester
+Новый алгоритм тестирования резонансов (голова ездит и вибрирует)
+
+Установка:
+
+ - Загрузить в принтер файлы:
+	 - /usr/share/klipper/klippy/extras/resonance_tester.py
+	 - /usr/share/klipper/klippy/extras/shaper_calibrate.py
+	 - /usr/share/klipper/klippy/toolhead.py
+ - Удалить на принтере:
+	 - /usr/share/klipper/klippy/extras/resonance_tester.pyc
+	 - /usr/share/klipper/klippy/extras/shaper_calibrate.pyc
+	 - /usr/share/klipper/klippy/toolhead.pyc    
+ - Перезагрузить принтер
+
+В printer.cfg в секции [resonance_tester] заменить 
+`accel_per_hz: 75` на  `accel_per_hz: 60`
+После этого команды `TEST_RESONANCES AXIS=X` и `TEST_RESONANCES AXIS=Y` будут снимать резонансы по новому алгоритму.

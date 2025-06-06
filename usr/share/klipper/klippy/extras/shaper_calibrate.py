@@ -1,6 +1,6 @@
 # Automatic calibration of input shapers
 #
-# Copyright (C) 2020  Dmitry Butyugin <dmbutyugin@google.com>
+# Copyright (C) 2020-2024  Dmitry Butyugin <dmbutyugin@google.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import collections, importlib, logging, math, multiprocessing, traceback, os
@@ -71,7 +71,9 @@ class CalibrationData:
             # Avoid division by zero errors
             psd /= self.freq_bins + .1
             # Remove low-frequency noise
-            psd[self.freq_bins < MIN_FREQ] = 0.
+            low_freqs = self.freq_bins < 2. * MIN_FREQ
+            psd[low_freqs] *= self.numpy.exp(
+                    -(2. * MIN_FREQ / (self.freq_bins[low_freqs] + .1))**2 + 1.)
     def get_psd(self, axis='all'):
         return self._psd_map[axis]
 
@@ -84,17 +86,6 @@ class ShaperCalibrate:
     def __init__(self, printer):
         self.printer = printer
         self.error = printer.command_error if printer else Exception
-        self.autotune_shapers = ['zv', 'mzv', 'ei', '2hump_ei', '3hump_ei']
-        configfile = self.printer.lookup_object('configfile')
-        gcode_macro_path = '/usr/data/printer_data/config/gcode_macro.cfg'
-        gconfig = None
-        try:
-            gconfig = configfile.read_config(gcode_macro_path)
-            if gconfig and gconfig.has_section('gcode_macro AUTOTUNE_SHAPERS'):
-                AUTOTUNE_SHAPERS = gconfig.getsection('gcode_macro AUTOTUNE_SHAPERS')
-                self.autotune_shapers = list(map(lambda x: x.replace("'", "") , AUTOTUNE_SHAPERS.getlist('variable_autotune_shapers', ['zv', 'mzv', 'ei', '2hump_ei', '3hump_ei'])))
-        except Exception as err:
-            logging.error("gcode_macro_path: %s, configfile.read_config error:%s" % (gcode_macro_path, err))
         try:
             self.numpy = importlib.import_module('numpy')
         except ImportError:
@@ -339,34 +330,49 @@ class ShaperCalibrate:
         offset_180 *= inv_D
         return max(offset_90, offset_180)
 
-    def fit_shaper(self, shaper_cfg, calibration_data, max_smoothing):
+    def fit_shaper(self, shaper_cfg, calibration_data, shaper_freqs,
+                   damping_ratio, scv, max_smoothing, test_damping_ratios,
+                   max_freq):
         np = self.numpy
 
-        test_freqs = np.arange(shaper_cfg.min_freq, MAX_SHAPER_FREQ, .2)
+        damping_ratio = damping_ratio or shaper_defs.DEFAULT_DAMPING_RATIO
+        test_damping_ratios = test_damping_ratios or TEST_DAMPING_RATIOS
+
+        if not shaper_freqs:
+            shaper_freqs = (None, None, None)
+        if isinstance(shaper_freqs, tuple):
+            freq_end = shaper_freqs[1] or MAX_SHAPER_FREQ
+            freq_start = min(shaper_freqs[0] or shaper_cfg.min_freq,
+                             freq_end - 1e-7)
+            freq_step = shaper_freqs[2] or .2
+            test_freqs = np.arange(freq_start, freq_end, freq_step)
+        else:
+            test_freqs = np.array(shaper_freqs)
+
+        max_freq = max(max_freq or MAX_FREQ, test_freqs.max())
 
         freq_bins = calibration_data.freq_bins
-        psd = calibration_data.psd_sum[freq_bins <= MAX_FREQ]
-        freq_bins = freq_bins[freq_bins <= MAX_FREQ]
+        psd = calibration_data.psd_sum[freq_bins <= max_freq]
+        freq_bins = freq_bins[freq_bins <= max_freq]
 
         best_res = None
         results = []
         for test_freq in test_freqs[::-1]:
             shaper_vibrations = 0.
             shaper_vals = np.zeros(shape=freq_bins.shape)
-            shaper = shaper_cfg.init_func(
-                    test_freq, shaper_defs.DEFAULT_DAMPING_RATIO)
-            shaper_smoothing = self._get_shaper_smoothing(shaper)
+            shaper = shaper_cfg.init_func(test_freq, damping_ratio)
+            shaper_smoothing = self._get_shaper_smoothing(shaper, scv=scv)
             if max_smoothing and shaper_smoothing > max_smoothing and best_res:
                 return best_res
             # Exact damping ratio of the printer is unknown, pessimizing
             # remaining vibrations over possible damping values
-            for dr in TEST_DAMPING_RATIOS:
+            for dr in test_damping_ratios:
                 vibrations, vals = self._estimate_remaining_vibrations(
                         shaper, dr, freq_bins, psd)
                 shaper_vals = np.maximum(shaper_vals, vals)
                 if vibrations > shaper_vibrations:
                     shaper_vibrations = vibrations
-            max_accel = self.find_shaper_max_accel(shaper)
+            max_accel = self.find_shaper_max_accel(shaper, scv)
             # The score trying to minimize vibrations, but also accounting
             # the growth of smoothing. The formula itself does not have any
             # special meaning, it simply shows good results on real user data
@@ -390,6 +396,8 @@ class ShaperCalibrate:
 
     def _bisect(self, func):
         left = right = 1.
+        if not func(1e-9):
+            return 0.
         while not func(left):
             right = left
             left *= .5
@@ -404,23 +412,27 @@ class ShaperCalibrate:
                 right = middle
         return left
 
-    def find_shaper_max_accel(self, shaper):
+    def find_shaper_max_accel(self, shaper, scv):
         # Just some empirically chosen value which produces good projections
         # for max_accel without much smoothing
         TARGET_SMOOTHING = 0.12
         max_accel = self._bisect(lambda test_accel: self._get_shaper_smoothing(
-            shaper, test_accel) <= TARGET_SMOOTHING)
+            shaper, test_accel, scv) <= TARGET_SMOOTHING)
         return max_accel
 
-    def find_best_shaper(self, calibration_data, max_smoothing, logger=None):
+    def find_best_shaper(self, calibration_data, shapers=None,
+                         damping_ratio=None, scv=None, shaper_freqs=None,
+                         max_smoothing=None, test_damping_ratios=None,
+                         max_freq=None, logger=None):
         best_shaper = None
         all_shapers = []
+        shapers = shapers or AUTOTUNE_SHAPERS
         for shaper_cfg in shaper_defs.INPUT_SHAPERS:
-            # if shaper_cfg.name not in AUTOTUNE_SHAPERS:
-            if shaper_cfg.name not in self.autotune_shapers:
+            if shaper_cfg.name not in shapers:
                 continue
             shaper = self.background_process_exec(self.fit_shaper, (
-                shaper_cfg, calibration_data, max_smoothing))
+                shaper_cfg, calibration_data, shaper_freqs, damping_ratio,
+                scv, max_smoothing, test_damping_ratios, max_freq))
             if logger is not None:
                 logger("Fitted shaper '%s' frequency = %.1f Hz "
                        "(vibrations = %.1f%%, smoothing ~= %.3f)" % (
@@ -447,8 +459,22 @@ class ShaperCalibrate:
             configfile.set('input_shaper', 'shaper_freq_'+axis,
                            '%.1f' % (shaper_freq,))
 
-    def save_calibration_data(self, output, calibration_data, shapers=None):
+    def apply_params(self, input_shaper, axis, shaper_name, shaper_freq):
+        if axis == 'xy':
+            self.apply_params(input_shaper, 'x', shaper_name, shaper_freq)
+            self.apply_params(input_shaper, 'y', shaper_name, shaper_freq)
+            return
+        gcode = self.printer.lookup_object("gcode")
+        axis = axis.upper()
+        input_shaper.cmd_SET_INPUT_SHAPER(gcode.create_gcode_command(
+                "SET_INPUT_SHAPER", "SET_INPUT_SHAPER", {
+                    "SHAPER_TYPE_" + axis: shaper_name,
+                    "SHAPER_FREQ_" + axis: shaper_freq}))
+
+    def save_calibration_data(self, output, calibration_data, shapers=None,
+                              max_freq=None):
         try:
+            max_freq = max_freq or MAX_FREQ
             with open(output, "w") as csvfile:
                 csvfile.write("freq,psd_x,psd_y,psd_z,psd_xyz")
                 if shapers:
@@ -457,7 +483,7 @@ class ShaperCalibrate:
                 csvfile.write("\n")
                 num_freqs = calibration_data.freq_bins.shape[0]
                 for i in range(num_freqs):
-                    if calibration_data.freq_bins[i] >= MAX_FREQ:
+                    if calibration_data.freq_bins[i] >= max_freq:
                         break
                     csvfile.write("%.1f,%.3e,%.3e,%.3e,%.3e" % (
                         calibration_data.freq_bins[i],
