@@ -50,3 +50,6 @@
 В printer.cfg в секции [resonance_tester] заменить 
 `accel_per_hz: 75` на  `accel_per_hz: 60`
 После этого команды `TEST_RESONANCES AXIS=X` и `TEST_RESONANCES AXIS=Y` будут снимать резонансы по новому алгоритму, а `TEST_RESONANCES_GRAPHS` еще и графики построит.
+
+> [!TIP]
+> Если необходимо вручную конвертировать на хосте csv файлы в графики (в командной строке SSH), то так же надо заменить /usr/share/klipper/scripts/calibrate_shaper.py
